@@ -8,16 +8,8 @@
 #include <hwloc.h>
 #include <condition_variable>
 #include <helper.h>
+#include <Workitem.h>
 
-
-struct Workitem {
-    int _id;
-    std::string _msg;
-    Workitem(int id, std::string msg) {
-        _id = id;
-        _msg = msg;
-    }
-};
 typedef std::queue<std::shared_ptr<Workitem>> queue_type;
 
 class Producer;
@@ -93,7 +85,7 @@ void Worker::work() {
     //}
 }
 
-Producer::Producer(int iterations, int node) : _next(0), _iterations(iterations), _node(node) {
+Producer::Producer(int iterations, int node) :  _status(-1), _next(0), _iterations(iterations), _node(node) {
 }
 
 Producer::~Producer() {
@@ -171,38 +163,31 @@ int main(int argc, char *argv[]) {
     }
     size_t threads = std::atoi(argv[1]);
     size_t total_items = std::atoi(argv[2]);
+
     std::condition_variable start_cv;
     std::mutex start_mutex;
-    //pin_to_core(1);
-    //pinToNode(0);
-
     std::vector<std::vector<unsigned>> cores  = getCoresForNodes(threads+1);
     //printVV(cores);
+
     Producer p0(total_items,cores[0][0]);
     createWorkers(p0, cores[0].size()-1, 0);
     for (size_t i=1; i < cores.size(); ++i) {
         createWorkers(p0, cores[i].size(), i);
     }
-    //std::vector<Producer> producers;
-    //std::vector<std::thread> prod_threads;
 
     std::thread t0(&Producer::run, &p0, std::ref(start_cv), std::ref(start_mutex));
-    //std::thread t1(&Producer::run, &p1, std::ref(start_cv), std::ref(start_mutex));
-    //std::thread t2(&Producer::run, &p2, std::ref(start_cv), std::ref(start_mutex));
-    //std::thread t3(&Producer::run, &p3, std::ref(start_cv), std::ref(start_mutex));
+
 
     sleep(2);
     std::cout << "Starting clock ... " << std::endl;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now() ;
     start_cv.notify_all();
     t0.join();
-    //t1.join();
-    //t2.join();
-    //t3.join();
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() ;
     typedef std::chrono::duration<int,std::milli> millisecs_t ;
     millisecs_t duration( std::chrono::duration_cast<millisecs_t>(end-start) ) ;
     sleep(2);
+
     std::cout << duration.count() << " ms.\n" ;
   return 0;
 }

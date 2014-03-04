@@ -9,19 +9,12 @@
 #include <condition_variable>
 #include <helper.h>
 #include <cmath>
+#include <Workitem.h>
 
 #ifdef DEBUG
 std::mutex stdout_mutex;
 #endif
 
-struct Workitem {
-    int _id;
-    std::string _msg;
-    Workitem(int id, std::string msg) {
-        _id = id;
-        _msg = msg;
-    }
-};
 typedef std::queue<std::shared_ptr<Workitem>> queue_type;
 
 class Producer;
@@ -41,12 +34,12 @@ public:
 class Producer {
     std::vector<Worker*> _worker_instances;
     std::vector<std::thread> _worker_threads;
+    std::atomic_int _status;
     std::atomic_size_t _next;
-    queue_type _queue;
     std::mutex _mutex;
+    queue_type _queue;
     int _iterations;
     int _node;
-    std::atomic_int _status;
     friend class Worker;
 
 public:
@@ -60,8 +53,6 @@ public:
 Worker::Worker(Producer &p, int node) : producer(p), _node(node), _sum(0) {
     //std::cout << "Worker: registering Worker " << this << std::endl;
     p.register_worker(this);
-    //bindToNode(node);
-    //pin_to_core(10);
     pinToNode(node);
 }
 
@@ -114,10 +105,7 @@ void Worker::work() {
     std::cout << _sum << std::endl;
 }
 
-Producer::Producer(int threads, int iterations, int node) : _next(0), _iterations(iterations), _node(node), _status(-1) {
-    //bindToNode(node);
-
-    //pinToNode(node);
+Producer::Producer(int threads, int iterations, int node) : _status(-1), _next(0), _iterations(iterations), _node(node) {
     for(int i = 0; i < threads; i++) {
         std::thread thread([this] {
             Worker worker(*this, this->_node);
@@ -213,8 +201,6 @@ int main(int argc, char *argv[]) {
     size_t total_items = std::atoi(argv[2]);
     std::condition_variable start_cv;
     std::mutex start_mutex;
-    //pin_to_core(1);
-    //pinToNode(0);
 
     std::vector<std::vector<unsigned>> cores  = getCoresForNodes(threads+1);
     //printVV(cores);

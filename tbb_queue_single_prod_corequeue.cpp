@@ -9,19 +9,11 @@
 #include <condition_variable>
 #include "tbb/concurrent_queue.h"
 #include <helper.h>
+#include <Workitem.h>
+#include <cmath>
 
-
-struct Workitem {
-    int _id;
-    std::string _msg;
-    Workitem(int id, std::string msg) {
-        _id = id;
-        _msg = msg;
-    }
-};
 typedef tbb::concurrent_queue<std::shared_ptr<Workitem>> queue_type;
 
-class Scheduler;
 class Producer;
 
 class Worker {
@@ -30,7 +22,6 @@ class Worker {
     int _node;
     int _sum;
     friend class Producer;
-    friend class Scheduler;
 
 public:
     Worker(Producer &p, int node);
@@ -43,11 +34,10 @@ class Producer {
     std::vector<std::thread> _worker_threads;
     std::atomic_int _status;
     std::atomic_size_t _next;
-    std::mutex _reg_mutex;
+    std::mutex _mutex;
     int _iterations;
     int _node;
     friend class Worker;
-    friend class Scheduler;
 
 public:
     Producer(int threads, int iterations, int node);
@@ -101,13 +91,13 @@ Producer::Producer(int threads, int iterations, int node) : _next(0), _iteration
         });
         _worker_threads.push_back(std::move(thread));
     }
-    while(_worker_threads.size() > _worker_instances.size()) {};
+    waitForRegistered();
     //std::cout << "Producer on Node" << node << ": All Workers registered!" << std::endl;
     _status = 1;
 
 }
 
-Producer::Producer(int iterations, int node) : _next(0), _iterations(iterations), _node(node) {
+Producer::Producer(int iterations, int node) : _status(-1), _next(0), _iterations(iterations), _node(node) {
 }
 
 Producer::~Producer() {
@@ -117,27 +107,27 @@ Producer::~Producer() {
 }
 
 void Producer::registerWorker(Worker* worker) {
-    std::lock_guard<std::mutex> lock(_reg_mutex);
+    std::lock_guard<std::mutex> lock(_mutex);
     _worker_instances.push_back(worker);
     //std::cout << "Producer: registered Worker " << worker << std::endl;
 }
 
 void Producer::waitForRegistered() {
     while(true) {
-        _reg_mutex.lock();
+        _mutex.lock();
         if (_worker_instances.size() >= _worker_threads.size()) {
-            _reg_mutex.unlock();
+            _mutex.unlock();
             break;
         }
         else {
-            _reg_mutex.unlock();
+            _mutex.unlock();
             sleep(0.5);
         }
     }
 }
 
 void Producer::addWorkerThread(std::thread& thread) {
-    std::lock_guard<std::mutex> lock(_reg_mutex);
+    std::lock_guard<std::mutex> lock(_mutex);
     _worker_threads.push_back(std::move(thread));
 }
 
@@ -163,11 +153,6 @@ void Producer::run(std::condition_variable& start, std::mutex& start_mutex) {
             //std::cout << "Producer: Thread " << i << "  joined!" << std::endl;
         }
 }
-
-class Scheduler{
-
-};
-
 
 void createWorkers(Producer& producer, int threads, int node) {
     for(int i = 0; i < threads; ++i) {
@@ -200,22 +185,15 @@ int main(int argc, char *argv[]) {
     for (size_t i=1; i < cores.size(); ++i) {
         createWorkers(p0, cores[i].size(), i);
     }
-    //std::vector<Producer> producers;
-    //std::vector<std::thread> prod_threads;
 
     std::thread t0(&Producer::run, &p0, std::ref(start_cv), std::ref(start_mutex));
-    //std::thread t1(&Producer::run, &p1, std::ref(start_cv), std::ref(start_mutex));
-    //std::thread t2(&Producer::run, &p2, std::ref(start_cv), std::ref(start_mutex));
-    //std::thread t3(&Producer::run, &p3, std::ref(start_cv), std::ref(start_mutex));
+
 
     sleep(2);
     std::cout << "Starting clock ... " << std::endl;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now() ;
     start_cv.notify_all();
     t0.join();
-    //t1.join();
-    //t2.join();
-    //t3.join();
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() ;
     typedef std::chrono::duration<int,std::milli> millisecs_t ;
     millisecs_t duration( std::chrono::duration_cast<millisecs_t>(end-start) ) ;

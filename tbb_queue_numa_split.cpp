@@ -9,19 +9,11 @@
 #include <condition_variable>
 #include "tbb/concurrent_queue.h"
 #include <helper.h>
+#include <Workitem.h>
+#include <cmath>
 
-
-struct Workitem {
-    int _id;
-    std::string _msg;
-    Workitem(int id, std::string msg) {
-        _id = id;
-        _msg = msg;
-    }
-};
 typedef tbb::concurrent_queue<std::shared_ptr<Workitem>> queue_type;
 
-class Scheduler;
 class Producer;
 
 class Worker {
@@ -30,7 +22,6 @@ class Worker {
     int _node;
     int _sum;
     friend class Producer;
-    friend class Scheduler;
 
 public:
     Worker(Producer &p, int node);
@@ -42,17 +33,16 @@ class Producer {
     std::vector<std::thread> _worker_threads;
     std::atomic_int _status;
     std::atomic_size_t _next;
-    std::mutex _reg_mutex;
+    std::mutex _mutex;
     int _iterations;
     int _node;
     friend class Worker;
-    friend class Scheduler;
 
 public:
     Producer(int threads, int iterations, int node);
     ~Producer();
     void register_worker(Worker* worker);
-
+    void waitForRegistered();
     void run(std::condition_variable& start, std::mutex& start_mutex);
 };
 
@@ -86,7 +76,7 @@ void Worker::work() {
     //}
 }
 
-Producer::Producer(int threads, int iterations, int node) : _next(0), _iterations(iterations), _node(node){
+Producer::Producer(int threads, int iterations, int node) : _status(-1), _next(0), _iterations(iterations), _node(node){
     _status = -1;
     //bindToNode(node);
 
@@ -98,7 +88,7 @@ Producer::Producer(int threads, int iterations, int node) : _next(0), _iteration
         });
         _worker_threads.push_back(std::move(thread));
     }
-    while(_worker_threads.size() > _worker_instances.size()) {};
+    waitForRegistered();
     //std::cout << "Producer on Node" << node << ": All Workers registered!" << std::endl;
     _status = 1;
 
@@ -111,9 +101,23 @@ Producer::~Producer() {
 }
 
 void Producer::register_worker(Worker* worker) {
-    std::lock_guard<std::mutex> lock(_reg_mutex);
+    std::lock_guard<std::mutex> lock(_mutex);
     _worker_instances.push_back(worker);
     //std::cout << "Producer: registered Worker " << worker << std::endl;
+}
+
+void Producer::waitForRegistered() {
+    while(true) {
+        _mutex.lock();
+        if (_worker_instances.size() >= _worker_threads.size()) {
+            _mutex.unlock();
+            break;
+        }
+        else {
+            _mutex.unlock();
+            sleep(0.5);
+        }
+    }
 }
 
 void Producer::run(std::condition_variable& start, std::mutex& start_mutex) {
@@ -138,48 +142,56 @@ void Producer::run(std::condition_variable& start, std::mutex& start_mutex) {
         }
 }
 
-class Scheduler{
-};
-
-
 
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        std::cout<< "usage: " << argv[0] << " <num_workitems> " << std::endl;
+    if (argc != 3) {
+        std::cout<< "usage: " << argv[0] << "<num_threads> <num_workitems> " << std::endl;
         exit(1);
     }
-    int total_items = std::atoi(argv[1]);
+    size_t threads = std::atoi(argv[1]);
+    size_t total_items = std::atoi(argv[2]);
     std::condition_variable start_cv;
     std::mutex start_mutex;
-    //pin_to_core(1);
-    //pinToNode(0);
 
-    //std::vector<Producer> producers;
-    //std::vector<std::thread> prod_threads;
+    std::vector<std::vector<unsigned>> cores  = getCoresForNodes(threads+1);
+    //printVV(cores);
 
+    std::vector<Producer*> producers;
+    std::vector<std::thread> prod_threads;
+    size_t num_nodes = getNumberOfNodes(getTopology());
+    if (threads < num_nodes) {num_nodes = threads;}
+    for (size_t nodes = num_nodes; nodes > 0; --nodes) {
+        size_t threads_for_node = ceil(float(threads)/nodes);
+        size_t node = num_nodes - nodes;
 
-    Producer p0(9,total_items/4,0);
-    Producer p1(9,total_items/4,1);
-    Producer p2(9,total_items/4,2);
-    Producer p3(9,total_items/4,3);
+#ifdef DEBUG
+        std::cout << "Main: Creating " << threads_for_node << " threads on node " << num_nodes - nodes << "..." << std::endl;
+#endif
+        Producer* prod = new Producer(threads_for_node ,total_items/num_nodes, node);
+        producers.push_back(std::move(prod));
+        threads -= threads_for_node;
+#ifdef DEBUG
+        std::cout << "Main: Finished. Remaining threads: " << threads << ", remaining nodes: " << nodes-1 << "." << std::endl;
+#endif
+    }
 
-    std::thread t0(&Producer::run, &p0, std::ref(start_cv), std::ref(start_mutex));
-    std::thread t1(&Producer::run, &p1, std::ref(start_cv), std::ref(start_mutex));
-    std::thread t2(&Producer::run, &p2, std::ref(start_cv), std::ref(start_mutex));
-    std::thread t3(&Producer::run, &p3, std::ref(start_cv), std::ref(start_mutex));
-
+    for(auto p : producers) {
+        std::thread thread(&Producer::run, p, std::ref(start_cv), std::ref(start_mutex));
+        prod_threads.push_back(std::move(thread));
+    }
     sleep(2);
+
+#ifdef DEBUG
+    std::cout << "Starting clock..." << std::endl;
+#endif
 
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now() ;
     start_cv.notify_all();
-    t0.join();
-    t1.join();
-    t2.join();
-    t3.join();
+    for(auto& p : prod_threads) {p.join();}
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() ;
     typedef std::chrono::duration<int,std::milli> millisecs_t ;
     millisecs_t duration( std::chrono::duration_cast<millisecs_t>(end-start) ) ;
-    sleep(2);
     std::cout << duration.count() << " ms.\n" ;
   return 0;
 }
+
